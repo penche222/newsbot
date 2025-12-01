@@ -7,8 +7,8 @@ import sys
 # ==========================================
 # 1. 설정 구간 (GitHub Secrets 이용)
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("8598755757:AAEcV41q9a6yKEy2MnAMIHWOUYP_1QFWQJI")
-CHAT_ID = os.environ.get("486376107")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 # ==========================================
 # 2. 텔레그램 기능 함수들
