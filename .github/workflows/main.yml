@@ -28,4 +28,8 @@ jobs:
         pip install requests beautifulsoup4
 
     - name: 뉴스 봇 실행하기
-     
+      env:
+        # 아까 Settings에 저장한 비밀번호를 여기서 코드에 주입합니다
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: python news_bot.py
