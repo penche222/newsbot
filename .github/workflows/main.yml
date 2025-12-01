@@ -1,0 +1,31 @@
+name: Daily News Bot
+
+on:
+  schedule:
+    # 매일 한국 시간 오전 8시 실행 (UTC 23:00)
+    # GitHub는 영국 시간(UTC) 기준이라 한국 시간(KST)보다 9시간을 빼야 합니다.
+    # 8시 - 9시간 = 전날 23시
+    - cron: '0 23 * * *'
+  
+  # 수동으로 실행 버튼을 눌러서 테스트해보고 싶을 때 필요
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 코드 가져오기
+      uses: actions/checkout@v3
+
+    - name: 파이썬 설정하기
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: 라이브러리 설치하기
+      run: |
+        pip install requests beautifulsoup4
+
+    - name: 뉴스 봇 실행하기
+     
