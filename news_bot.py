@@ -1,87 +1,92 @@
 import requests
+import datetime
 import os
-import sys
+import urllib.parse
+import xml.etree.ElementTree as ET
+import json
 
 # ==========================================
-# 1. 환경변수(Secrets) 상태 점검
+# 1. 설정
 # ==========================================
-print("--- [1단계] Secrets 값 점검 ---")
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# 1-1. 토큰 점검
-if not TOKEN:
-    print("❌ [치명적 오류] TELEGRAM_TOKEN이 없습니다! Secrets에 저장이 안 됐습니다.")
-    sys.exit(1)
-else:
-    # 토큰 앞뒤에 공백이 있는지 확인
-    if len(TOKEN) != len(TOKEN.strip()):
-        print(f"❌ [원인 발견] 토큰에 불필요한 공백이 포함되어 있습니다. (길이: {len(TOKEN)})")
-        print("👉 해결책: Secrets를 수정해서 앞뒤 공백을 지우세요.")
-    else:
-        print(f"✅ 토큰 형식 정상 (앞 5자리: {TOKEN[:5]}...)")
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    requests.post(url, json=payload)
 
-# 1-2. 채팅 ID 점검
-if not CHAT_ID:
-    print("❌ [치명적 오류] CHAT_ID가 없습니다! Secrets에 저장이 안 됐습니다.")
-    sys.exit(1)
-else:
-    if len(CHAT_ID) != len(CHAT_ID.strip()):
-        print(f"❌ [원인 발견] CHAT_ID에 불필요한 공백이 포함되어 있습니다.")
-        print("👉 해결책: Secrets를 수정해서 앞뒤 공백을 지우세요.")
-    else:
-        print(f"✅ 채팅 ID 형식 정상 ({CHAT_ID})")
-
-
-# ==========================================
-# 2. 텔레그램 서버 접속 테스트 (getMe)
-# ==========================================
-print("\n--- [2단계] 봇 자체 테스트 (getMe) ---")
-url_me = f"https://api.telegram.org/bot{TOKEN}/getMe"
-res_me = requests.get(url_me)
-
-if res_me.status_code == 200:
-    bot_info = res_me.json()
-    print(f"✅ 봇 로그인 성공! (봇 이름: {bot_info['result']['first_name']})")
-else:
-    print(f"❌ [원인 발견] 봇 토큰이 틀렸습니다. (응답 코드: {res_me.status_code})")
-    print(f"👉 텔레그램 서버 응답: {res_me.text}")
-    print("👉 해결책: 봇파더에게 토큰을 다시 받거나, Secrets에 오타 없이 복사했는지 확인하세요.")
-    sys.exit(1)
-
+def get_google_news(keyword):
+    encoded_keyword = urllib.parse.quote(keyword)
+    url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        res = requests.get(url)
+        root = ET.fromstring(res.content)
+        items = root.findall(".//item")
+        if not items: return None
+        
+        result_text = f"\n🔍 <b>[{keyword}]</b>\n"
+        for i, item in enumerate(items):
+            if i >= 3: break
+            title = item.find("title").text
+            link = item.find("link").text
+            result_text += f"- <a href='{link}'>{title}</a>\n"
+        return result_text
+    except:
+        return None
 
 # ==========================================
-# 3. 메시지 전송 테스트 (sendMessage)
+# 메인 실행 (진단 모드)
 # ==========================================
-print("\n--- [3단계] 메시지 전송 테스트 ---")
-url_send = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-payload = {
-    "chat_id": CHAT_ID,
-    "text": "🚨 진단 메시지입니다. 이게 보이면 ID는 맞습니다."
-}
-
-res_send = requests.post(url_send, json=payload)
-print(f"📡 전송 시도 결과 코드: {res_send.status_code}")
-
-if res_send.status_code == 200:
-    print("🎉 성공! 텔레그램 메시지가 도착했을 겁니다.")
-    print("👉 만약 이게 왔다면, 문제는 '뉴스 검색' 쪽에 있었던 겁니다.")
-else:
-    print("❌ [원인 발견] 메시지 전송 실패!")
-    print(f"👉 텔레그램 에러 내용: {res_send.text}")
+if __name__ == "__main__":
     
-    # 에러 메시지별 친절한 해석
-    err_text = res_send.text
-    if "chat not found" in err_text:
-        print("\n💡 [해석] '채널을 못 찾겠다'고 합니다.")
-        print("1. CHAT_ID가 틀렸습니다. (현재 입력값: " + CHAT_ID + ")")
-        print("2. ID 앞에 '-100'을 빼먹었는지 확인하세요.")
-    elif "Unauthorized" in err_text:
-        print("\n💡 [해석] 토큰이 틀렸습니다.")
-    elif "bot is not a member" in err_text:
-        print("\n💡 [해석] 봇이 채널에 없습니다.")
-        print("👉 봇을 채널 관리자로 다시 초대하세요.")
-    elif "Forbidden" in err_text:
-        print("\n💡 [해석] 봇이 강퇴당했거나 권한이 없습니다.")
+    # 1. 봇이 보는 채널 정보 가져오기
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
+    res = requests.get(url).json()
+    
+    debug_msg = "🕵️‍♂️ <b>[봇의 시야 확인]</b>\n"
+    
+    # 2. 분석 결과 보고
+    if "result" in res:
+        chat_info = res["result"]
+        chat_type = chat_info.get("type", "알수없음")
+        debug_msg += f"- 방 타입: {chat_type}\n"
+        
+        # 고정 메시지가 있는지 확인
+        if "pinned_message" in chat_info:
+            pinned_text = chat_info["pinned_message"]["text"]
+            debug_msg += f"- 고정 메시지 발견됨: O\n"
+            debug_msg += f"- 내용: <b>'{pinned_text}'</b>\n"
+            
+            # 키워드 추출 시도
+            if "설정" in pinned_text:
+                targets = pinned_text.split("설정")[1].replace(":", "").strip()
+                keywords = [k.strip() for k in targets.split(",") if k.strip()]
+                debug_msg += f"- 추출된 키워드: {keywords}\n"
+                final_keywords = keywords
+            else:
+                debug_msg += "- ⚠️ 내용에 '설정'이라는 글자가 없음\n"
+                final_keywords = ["삼성전자"]
+        else:
+            debug_msg += "- ❌ 고정 메시지가 안 보임 (권한 문제 or 핀 안함)\n"
+            final_keywords = ["삼성전자"]
+    else:
+        debug_msg += f"- ❌ 정보 조회 실패: {res}\n"
+        final_keywords = ["삼성전자"]
 
-print("\n--- 진단 종료 ---")
+    # 3. 진단 결과 전송 (텔레그램으로 범인을 알려줌)
+    send_telegram_message(debug_msg)
+
+    # 4. 뉴스 전송 (추출된 키워드 or 기본값)
+    full_news = ""
+    for kw in final_keywords:
+        news = get_google_news(kw)
+        if news: full_news += news
+        
+    if full_news:
+        send_telegram_message(full_news)
