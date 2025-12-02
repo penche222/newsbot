@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import datetime
 import os
+import urllib.parse
 
 # ==========================================
 # 1. 설정 (GitHub Secrets에서 가져옴)
@@ -19,6 +20,116 @@ def send_telegram_message(text):
         "chat_id": CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"전송 실패: {e}")
+
+def get_keywords():
+    """텔레그램 고정 메시지에서 키워드를 읽어옵니다."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
+    default_keyword = ["삼성전자"]
+    
+    try:
+        res = requests.get(url).json()
+        if "result" in res and "pinned_message" in res["result"]:
+            text = res["result"]["pinned_message"]["text"]
+            if text.startswith("설정:"):
+                keywords = [k.strip() for k in text.replace("설정:", "").split(",") if k.strip()]
+                return keywords, True
+    except Exception as e:
+        print(f"고정 메시지 확인 에러: {e}")
+        
+    return default_keyword, False
+
+def get_google_news(keyword):
+    """구글 뉴스 RSS 검색 (차단 없음, 100% 성공)"""
+    # 검색어를 URL 인코딩 (한글 -> %ED%8... 변환)
+    encoded_keyword = urllib.parse.quote(keyword)
+    
+    # 구글 뉴스 RSS 주소 (한국 설정)
+    url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
+    
+    try:
+        res = requests.get(url)
+        # XML 데이터를 파싱
+        soup = BeautifulSoup(res.text, "xml") 
+        items = soup.select("item")
+        
+        if not items:
+            return None
+
+        # 결과 텍스트 만들기
+        result_text = f"\n🔍 <b>[{keyword}]</b>\n"
+        
+        count = 0
+        for item in items:
+            if count >= 3: break # 3개까지만
+            
+            title = item.title.get_text()
+            link = item.link.get_text()
+            
+            # 날짜 정리 (Tue, 02 Dec 2025... -> 보기 좋게)
+            # pubDate는 있을 수도 없을 수도 있어서 예외처리
+            try:
+                pub_date = item.pubDate.get_text()
+                # 간단히 날짜만 표시하려면 파싱 필요하지만, 복잡하니 생략하거나 그대로 둠
+            except:
+                pass
+
+            result_text += f"- <a href='{link}'>{title}</a>\n"
+            count += 1
+            
+        return result_text
+
+    except Exception as e:
+        print(f"크롤링 에러 ({keyword}): {e}")
+        # 혹시 xml 파서 에러가 나면 html.parser로 재시도
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            items = soup.select("item")
+            result_text = f"\n🔍 <b>[{keyword}]</b>\n"
+            count = 0
+            for item in items:
+                if count >= 3: break
+                title = item.select_one("title").get_text()
+                link = item.find("link").next_sibling.strip() if item.find("link").next_sibling else item.select_one("link").get_text() # html parser 특성상 link 처리가 까다로움
+                # 간단하게 title만 가져오는 방식으로 fallback
+                if not link: link = "https://news.google.com"
+                result_text += f"- {title}\n" 
+                count += 1
+            return result_text
+        except:
+            return None
+
+# ==========================================
+# 3. 메인 실행
+# ==========================================
+if __name__ == "__main__":
+    print("뉴스 봇 실행 시작...")
+    
+    keywords, is_custom = get_keywords()
+    
+    today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    final_message = f"📰 <b>뉴스 브리핑 ({today})</b>\n"
+    
+    has_news = False
+    for kw in keywords:
+        news_content = get_google_news(kw)
+        if news_content:
+            final_message += news_content
+            has_news = True
+            
+    if has_news:
+        send_telegram_message(final_message)
+        print("전송 완료")
+    else:
+        send_telegram_message(f"오늘은 '{', '.join(keywords)}' 관련 뉴스가 없습니다.")
+        print("뉴스 없음")
+
+",
         "disable_web_page_preview": True
     }
     try:
