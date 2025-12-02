@@ -1,88 +1,103 @@
 import requests
-import os
-import sys
 from bs4 import BeautifulSoup
+import datetime
+import os
 
 # ==========================================
-# 환경변수 확인
+# 1. 설정 (GitHub Secrets에서 가져옴)
 # ==========================================
-print("--- [1단계] 환경변수 점검 ---")
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-if not TOKEN:
-    print("❌ 에러: TELEGRAM_TOKEN이 설정되지 않았습니다. Secrets를 확인하세요.")
-    sys.exit(1)
-else:
-    print(f"✅ 토큰 확인됨 (앞 5자리: {TOKEN[:5]}...)")
+# ==========================================
+# 2. 기능 함수들
+# ==========================================
+def send_telegram_message(text):
+    """텔레그램으로 메시지를 보냅니다."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True # 링크 미리보기 끄기 (깔끔하게)
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"전송 실패: {e}")
 
-if not CHAT_ID:
-    print("❌ 에러: CHAT_ID가 설정되지 않았습니다. Secrets를 확인하세요.")
-    sys.exit(1)
-else:
-    print(f"✅ 채팅ID 확인됨 ({CHAT_ID})")
+def get_keywords():
+    """텔레그램 고정 메시지에서 키워드를 읽어옵니다."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
+    default_keyword = ["특징주"] # 기본값
+    
+    try:
+        res = requests.get(url).json()
+        if "result" in res and "pinned_message" in res["result"]:
+            text = res["result"]["pinned_message"]["text"]
+            if text.startswith("설정:"):
+                # "설정: 삼성전자, SK하이닉스" -> ["삼성전자", "SK하이닉스"]
+                keywords = [k.strip() for k in text.replace("설정:", "").split(",") if k.strip()]
+                return keywords, True # 성공
+    except Exception as e:
+        print(f"고정 메시지 확인 에러: {e}")
+        
+    return default_keyword, False # 실패 시 기본값 반환
 
+def get_naver_news(keyword):
+    """네이버 뉴스 검색 (최신순)"""
+    url = f"https://search.naver.com/search.naver?where=news&query={keyword}&sort=1"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    try:
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        news_list = soup.select(".news_tit")
+        
+        if not news_list:
+            return None
+
+        # 결과 텍스트 만들기
+        result_text = f"\n🔍 <b>[{keyword}]</b>\n"
+        for i, item in enumerate(news_list):
+            if i >= 3: break # 3개까지만
+            title = item.get_text().replace("<", "").replace(">", "") # 태그 깨짐 방지
+            link = item['href']
+            result_text += f"- <a href='{link}'>{title}</a>\n"
+            
+        return result_text
+    except Exception as e:
+        print(f"크롤링 에러 ({keyword}): {e}")
+        return None
 
 # ==========================================
-# 텔레그램 권한 & 고정 메시지 확인
+# 3. 메인 실행
 # ==========================================
-print("\n--- [2단계] 텔레그램 연결 및 권한 점검 ---")
-url_info = f"https://api.telegram.org/bot{TOKEN}/getChat?chat_id={CHAT_ID}"
-res_info = requests.get(url_info)
-info_json = res_info.json()
+if __name__ == "__main__":
+    print("뉴스 봇 실행 시작...")
+    
+    # 1. 키워드 가져오기
+    keywords, is_custom = get_keywords()
+    
+    # 2. 날짜 헤더 만들기
+    today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    final_message = f"📰 <b>뉴스 브리핑 ({today})</b>\n"
+    
+    if not is_custom:
+        final_message += "(💡 팁: 채널에 '설정: 종목명'을 적고 고정하면 해당 종목을 검색합니다)\n"
 
-print(f"📡 응답 코드: {res_info.status_code}")
-if res_info.status_code != 200:
-    print(f"❌ 텔레그램 접속 실패! 응답 내용:\n{res_info.text}")
-    print("👉 원인 1: CHAT_ID가 틀렸을 수 있습니다. (-100으로 시작하는지 확인)")
-    print("👉 원인 2: 봇이 채널에 강퇴당했거나 초대되지 않았습니다.")
-else:
-    print("✅ 텔레그램 연결 성공!")
-    # 고정 메시지 확인
-    if "result" in info_json and "pinned_message" in info_json["result"]:
-        pinned = info_json["result"]["pinned_message"]["text"]
-        print(f"📌 고정 메시지 감지됨: '{pinned}'")
+    # 3. 뉴스 긁어오기
+    has_news = False
+    for kw in keywords:
+        news_content = get_naver_news(kw)
+        if news_content:
+            final_message += news_content
+            has_news = True
+            
+    # 4. 전송
+    if has_news:
+        send_telegram_message(final_message)
+        print("전송 완료")
     else:
-        print("⚠️ 고정 메시지가 없습니다. (권한은 정상입니다)")
-        # 봇이 관리자가 아니면 고정 메시지를 못 읽을 수도 있음
-        print("👉 참고: 봇이 '관리자(Admin)'가 아니면 고정 메시지를 못 읽을 수 있습니다.")
-
-
-# ==========================================
-# 테스트 메시지 전송 시도
-# ==========================================
-print("\n--- [3단계] 강제 메시지 전송 테스트 ---")
-url_send = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-payload = {
-    "chat_id": CHAT_ID,
-    "text": "🚀 테스트 메시지입니다. 이게 보이면 봇은 정상입니다.",
-}
-res_send = requests.post(url_send, json=payload)
-
-if res_send.status_code == 200:
-    print("✅ 테스트 메시지 전송 성공! 텔레그램을 확인하세요.")
-else:
-    print(f"❌ 메시지 전송 실패! (응답 코드: {res_send.status_code})")
-    print(f"내용: {res_send.text}")
-
-
-# ==========================================
-# 네이버 뉴스 크롤링 테스트
-# ==========================================
-print("\n--- [4단계] 네이버 뉴스 크롤링 테스트 ---")
-test_keyword = "삼성전자"
-search_url = f"https://search.naver.com/search.naver?where=news&query={test_keyword}&sort=1"
-headers = {"User-Agent": "Mozilla/5.0"}
-res_news = requests.get(search_url, headers=headers)
-soup = BeautifulSoup(res_news.text, 'html.parser')
-items = soup.select(".news_tit")
-
-print(f"검색어: {test_keyword}")
-if len(items) > 0:
-    print(f"✅ 크롤링 성공! 발견된 기사 수: {len(items)}개")
-    print(f"첫 번째 기사 제목: {items[0].get_text()}")
-else:
-    print("❌ 크롤링 실패! 기사를 하나도 못 찾았습니다.")
-    print("👉 원인: 네이버 HTML 구조가 바뀌었거나, 차단당했을 수 있습니다.")
-
-print("\n--- [진단 종료] ---")
+        send_telegram_message(f"오늘은 '{', '.join(keywords)}' 관련 뉴스가 없습니다.")
+        print("뉴스 없음")
