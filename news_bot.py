@@ -19,7 +19,7 @@ def send_telegram_message(text):
         "chat_id": CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True # 링크 미리보기 끄기 (깔끔하게)
+        "disable_web_page_preview": True
     }
     try:
         requests.post(url, json=payload)
@@ -29,43 +29,63 @@ def send_telegram_message(text):
 def get_keywords():
     """텔레그램 고정 메시지에서 키워드를 읽어옵니다."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
-    default_keyword = ["특징주"] # 기본값
+    default_keyword = ["삼성전자"] # '특징주'는 결과가 없을 때가 많아 확실한 '삼성전자'로 변경
     
     try:
         res = requests.get(url).json()
         if "result" in res and "pinned_message" in res["result"]:
             text = res["result"]["pinned_message"]["text"]
             if text.startswith("설정:"):
-                # "설정: 삼성전자, SK하이닉스" -> ["삼성전자", "SK하이닉스"]
                 keywords = [k.strip() for k in text.replace("설정:", "").split(",") if k.strip()]
-                return keywords, True # 성공
+                print(f"📌 고정 메시지 적용됨: {keywords}")
+                return keywords, True
+        else:
+            print("⚠️ 고정 메시지 없음 (기본값 사용)")
     except Exception as e:
         print(f"고정 메시지 확인 에러: {e}")
         
-    return default_keyword, False # 실패 시 기본값 반환
+    return default_keyword, False
 
 def get_naver_news(keyword):
-    """네이버 뉴스 검색 (최신순)"""
+    """네이버 뉴스 검색 (사람인 척 위장 강화)"""
+    # 정확도순 대신 최신순(sort=1)
     url = f"https://search.naver.com/search.naver?where=news&query={keyword}&sort=1"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 🚨 핵심 수정: 헤더를 진짜 브라우저처럼 길게 설정
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
     
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 1차 시도: 일반적인 뉴스 제목 클래스 (.news_tit)
         news_list = soup.select(".news_tit")
         
+        # 2차 시도: 만약 못 찾았으면 다른 클래스명으로 시도 (.tit)
         if not news_list:
+            print(f"[{keyword}] 1차 검색 실패, 2차 시도...")
+            news_list = soup.select("a.tit")
+
+        if not news_list:
+            print(f"[{keyword}] 뉴스 검색 결과 0건 (HTML 구조가 다르거나 차단됨)")
             return None
+
+        print(f"[{keyword}] 뉴스 {len(news_list)}개 발견!")
 
         # 결과 텍스트 만들기
         result_text = f"\n🔍 <b>[{keyword}]</b>\n"
         for i, item in enumerate(news_list):
             if i >= 3: break # 3개까지만
-            title = item.get_text().replace("<", "").replace(">", "") # 태그 깨짐 방지
+            title = item.get_text().strip().replace("<", "").replace(">", "")
             link = item['href']
             result_text += f"- <a href='{link}'>{title}</a>\n"
             
         return result_text
+
     except Exception as e:
         print(f"크롤링 에러 ({keyword}): {e}")
         return None
@@ -76,17 +96,15 @@ def get_naver_news(keyword):
 if __name__ == "__main__":
     print("뉴스 봇 실행 시작...")
     
-    # 1. 키워드 가져오기
     keywords, is_custom = get_keywords()
     
-    # 2. 날짜 헤더 만들기
     today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     final_message = f"📰 <b>뉴스 브리핑 ({today})</b>\n"
     
+    # 디버깅용: 고정메시지 안 썼으면 알려주기
     if not is_custom:
-        final_message += "(💡 팁: 채널에 '설정: 종목명'을 적고 고정하면 해당 종목을 검색합니다)\n"
+        final_message += "(⚠️ 현재 '기본 키워드'로 검색 중입니다. 채널에 '설정: 종목명'을 고정해주세요)\n"
 
-    # 3. 뉴스 긁어오기
     has_news = False
     for kw in keywords:
         news_content = get_naver_news(kw)
@@ -94,10 +112,11 @@ if __name__ == "__main__":
             final_message += news_content
             has_news = True
             
-    # 4. 전송
     if has_news:
         send_telegram_message(final_message)
         print("전송 완료")
     else:
-        send_telegram_message(f"오늘은 '{', '.join(keywords)}' 관련 뉴스가 없습니다.")
-        print("뉴스 없음")
+        # 뉴스를 못 찾았더라도 오류 메시지를 텔레그램으로 보내서 확인시켜줌
+        error_msg = f"❌ <b>[{', '.join(keywords)}]</b> 관련 뉴스를 찾지 못했습니다.\n네이버가 차단했거나, 해당 키워드의 최신 뉴스가 없습니다."
+        send_telegram_message(error_msg)
+        print("뉴스 없음 메시지 전송")
