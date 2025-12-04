@@ -41,7 +41,7 @@ def send_telegram_message(text):
         print(f"❌ 연결 에러: {e}")
 
 # ==========================================
-# 4. 설정 읽기
+# 4. 설정 읽기 (알림 메시지 삭제됨)
 # ==========================================
 def get_settings_from_pin():
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
@@ -79,13 +79,12 @@ def get_settings_from_pin():
             stocks = [s.strip() for s in temp_stocks if s.strip()]
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
-            yst_str = get_yesterday_range().strftime("%Y-%m-%d")
-            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(스포츠/마케팅/수상/론칭 뉴스 차단)"
-            send_telegram_message(info_msg)
-            
+            # [삭제됨] "검색 시작" 알림 메시지 부분 제거
+            # 조용히 설정값만 반환합니다.
             return stocks, filter_keywords
 
     except Exception as e:
+        # 에러 날 때만 알려줌
         send_telegram_message(f"⚠️ 설정 읽기 실패: {e}")
         
     return stocks, filter_keywords
@@ -108,7 +107,7 @@ def is_similar_news(new_title, existing_titles):
     return False
 
 # ==========================================
-# 6. 뉴스 수집 및 분류 (최종 필터 적용)
+# 6. 뉴스 수집 및 분류 (페스티벌 차단 추가)
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
     all_keyword_news = {} 
@@ -116,19 +115,19 @@ def fetch_and_classify_news(stocks, filter_keywords):
     
     target_date = get_yesterday_range()
     
-    # ★ 노이즈 필터 리스트 (이 단어가 있으면 무조건 버림)
+    # ★ 노이즈 필터 리스트
     NOISE_WORDS = [
         # 1. 쓸모없는 카테고리
         "포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는",
         # 2. 스포츠 관련
         "야구", "축구", "농구", "배구", "골프", "올림픽", "월드컵", "선수", "경기", "리그", "우승", "감독", "시구", 
-        "연승", "연패", # [NEW] 추가됨
-        # 3. 사회활동/CSR/수상 관련
+        "연승", "연패",
+        # 3. 사회활동/CSR/수상/축제 관련
         "사회공헌", "봉사", "나눔", "기부", "성금", "캠페인", "후원", "장학", "지원사업", "CSR", "플로깅", "연탄",
-        "수상", "대상", "표창", "선정", # [NEW] 수상 관련 추가됨 (단, '사업자 선정' 등은 걸릴 수 있으니 주의)
+        "수상", "대상", "표창", "선정", "페스티벌", "박람회", "전시회", # [NEW] 페스티벌, 박람회 추가됨
         # 4. 마케팅/이벤트/혜택/론칭 관련
         "이벤트", "프로모션", "혜택", "할인", "적립", "경품", "사은품", "특가", "기획전", "쿠폰", "체험단", "오픈런", "페이백", "출시기념",
-        "론칭", "런칭", "오픈", "개장", "입점" # [NEW] 론칭 관련 추가됨
+        "론칭", "런칭", "오픈", "개장", "입점"
     ]
 
     for i, stock in enumerate(stocks):
@@ -151,7 +150,6 @@ def fetch_and_classify_news(stocks, filter_keywords):
             seen_titles = []
 
             for item in items:
-                # 1. 날짜 확인
                 try:
                     pub_date_str = item.find("pubDate").text
                     article_dt_utc = parsedate_to_datetime(pub_date_str)
@@ -163,14 +161,8 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 link = item.find("link").text
                 
                 # --- [강력한 필터링] ---
-                
-                # 2. 노이즈 단어 삭제 (스포츠, 봉사, 이벤트, 론칭, 수상 등)
                 if any(noise in title for noise in NOISE_WORDS): continue
-                
-                # 3. 제목에 종목명 없으면 삭제
                 if stock not in title: continue
-
-                # 4. AI 유사도 중복 검사
                 if is_similar_news(title, seen_titles): continue
                 
                 seen_titles.append(title)
@@ -241,7 +233,8 @@ if __name__ == "__main__":
             flat_keyword_list.append("")
         smart_send(header, flat_keyword_list)
     else:
-        send_telegram_message(f"🔥 핵심 요약: 관련 뉴스가 없습니다.")
+        # 뉴스 없으면 조용히 종료 (아무 메시지도 안 보냄)
+        pass
     
     # [2] 일반 뉴스
     if normal_news:
@@ -253,4 +246,5 @@ if __name__ == "__main__":
             flat_normal_list.append("")
         smart_send(header, flat_normal_list)
     else:
-        send_telegram_message(f"📰 일반 뉴스: 조건에 맞는 어제 뉴스가 없습니다.")
+        # 뉴스 없으면 조용히 종료
+        pass
