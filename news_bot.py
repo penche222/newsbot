@@ -15,22 +15,19 @@ CHAT_ID = os.environ.get("CHAT_ID")
 # 2. 날짜 계산 (어제 날짜)
 # ==========================================
 def get_yesterday_range():
-    # UTC + 9시간 = 한국 시간
     now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
     yesterday = now_kst - datetime.timedelta(days=1)
     return yesterday.date()
 
 # ==========================================
-# 3. 텔레그램 전송 함수 (긴 메시지 자동 분할)
+# 3. 텔레그램 전송 함수 (4096자 제한 대응)
 # ==========================================
 def send_telegram_message(text):
-    """메시지가 4096자를 넘으면 나눠서 보냅니다."""
-    if not text.strip(): return # 빈 메시지면 전송 안함
-
+    if not text.strip(): return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    # 4000자 단위로 자르기 (여유분 두기)
-    max_len = 4000
+    # 3500자 단위로 안전하게 자름
+    max_len = 3500
     for i in range(0, len(text), max_len):
         chunk = text[i:i+max_len]
         payload = {
@@ -41,73 +38,111 @@ def send_telegram_message(text):
         }
         try:
             requests.post(url, json=payload)
-            time.sleep(0.5) # 전송 순서 꼬임 방지
+            time.sleep(1) # 메시지 전송 사이에도 쉼
         except Exception as e:
             print(f"전송 실패: {e}")
 
 def get_settings_from_pin():
-    """고정 메시지 읽기"""
+    """줄바꿈, 콤마, 들여쓰기 등 개떡같이 써도 찰떡같이 알아듣는 파서"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
+    
     stocks = ["삼성전자"]
     filter_keywords = []
     
     try:
         res = requests.get(url).json()
         if "result" in res and "pinned_message" in res["result"]:
-            text = res["result"]["pinned_message"]["text"]
-            lines = text.split('\n')
+            raw_text = res["result"]["pinned_message"]["text"]
+            
+            # --- 파싱 로직 시작 ---
+            lines = raw_text.split('\n')
+            current_mode = None # 지금 읽는 줄이 종목인지 키워드인지 기억
+            
+            temp_stocks = []
+            temp_keywords = []
+
             for line in lines:
                 line = line.strip()
-                if line.startswith("종목:") or line.startswith("종목 :"):
-                    clean_line = line.replace("종목", "").replace(":", "").strip()
-                    stocks = [s.strip() for s in clean_line.split(",") if s.strip()]
-                if line.startswith("키워드:") or line.startswith("키워드 :"):
-                    clean_line = line.replace("키워드", "").replace(":", "").strip()
-                    filter_keywords = [k.strip() for k in clean_line.split(",") if k.strip()]
-            return stocks, filter_keywords
-    except:
+                if not line: continue # 빈 줄 무시
+
+                # '종목' 이라는 단어가 포함된 줄을 만나면 모드 변경
+                if "종목" in line and ":" in line:
+                    current_mode = "stock"
+                    # "종목 : 삼성전자" -> "삼성전자" 추출
+                    content = line.split(":", 1)[1]
+                    temp_stocks.extend(content.split(","))
+                    continue
+                
+                # '키워드' 라는 단어가 포함된 줄을 만나면 모드 변경
+                elif "키워드" in line and ":" in line:
+                    current_mode = "keyword"
+                    content = line.split(":", 1)[1]
+                    temp_keywords.extend(content.split(","))
+                    continue
+                
+                # 헤더가 없는 줄은 현재 모드에 따라 추가 (줄바꿈 지원)
+                if current_mode == "stock":
+                    temp_stocks.extend(line.split(","))
+                elif current_mode == "keyword":
+                    temp_keywords.extend(line.split(","))
+
+            # 공백 제거 및 빈 값 제거
+            stocks = [s.strip() for s in temp_stocks if s.strip()]
+            filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
+            
+            # (디버깅용) 텔레그램으로 인식 결과 알려줌
+            return stocks, filter_keywords, True
+
+    except Exception as e:
+        print(f"설정 파싱 에러: {e}")
         pass
-    return stocks, filter_keywords
+        
+    return stocks, filter_keywords, False
 
 # ==========================================
-# 4. 뉴스 수집 및 분류 함수
+# 4. 뉴스 수집 및 분류
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
-    """모든 종목의 뉴스를 긁어서 [키워드 뉴스]와 [일반 뉴스]로 나눕니다."""
-    
-    # 결과 저장소
-    all_keyword_news = [] # [{"stock": "삼성", "title": "...", "link": "..."}, ...]
-    all_normal_news = {}  # {"삼성": ["뉴스1", "뉴스2"], "SK": ...}
+    all_keyword_news = [] 
+    all_normal_news = {} 
     
     target_date = get_yesterday_range()
 
-    for stock in stocks:
+    # ★ 봇이 인식한 종목 리스트를 먼저 보여줌 (확인용)
+    intro = f"🔍 <b>검색 시작</b>\n대상 종목({len(stocks)}개): {', '.join(stocks)}\n"
+    if filter_keywords:
+        intro += f"필터 키워드: {', '.join(filter_keywords)}"
+    send_telegram_message(intro)
+
+    for i, stock in enumerate(stocks):
+        # ★ 핵심: 구글 차단 방지를 위해 종목마다 2초씩 쉼
+        if i > 0: time.sleep(2)
+        
         encoded_keyword = urllib.parse.quote(stock)
         url = f"https://news.google.com/rss/search?q={encoded_keyword}+when:2d&hl=ko&gl=KR&ceid=KR:ko"
         
         try:
-            res = requests.get(url)
+            res = requests.get(url, timeout=10) # 타임아웃 설정
             root = ET.fromstring(res.content)
             items = root.findall(".//item")
             
-            stock_normal_items = [] # 이 종목의 일반 뉴스 임시 저장
+            stock_normal_items = []
 
             for item in items:
-                # 1. 날짜 필터링
+                # 날짜 필터링
                 try:
                     from email.utils import parsedate_to_datetime
                     pub_date_str = item.find("pubDate").text
                     article_dt_kst = parsedate_to_datetime(pub_date_str) + datetime.timedelta(hours=9)
                     if article_dt_kst.date() != target_date:
-                        continue # 어제 뉴스가 아니면 패스
+                        continue 
                 except:
                     continue
 
-                # 2. 내용 추출
                 title = item.find("title").text
                 link = item.find("link").text
                 
-                # 3. 키워드 매칭 여부 확인
+                # 키워드 매칭
                 is_matched = False
                 matched_key = ""
                 if filter_keywords:
@@ -120,22 +155,22 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 formatted_link = f"<a href='{link}'>{title}</a>"
 
                 if is_matched:
-                    # 키워드 뉴스에 추가 (종목명, 키워드, 링크 포함)
                     all_keyword_news.append({
                         "stock": stock,
                         "key": matched_key,
                         "content": formatted_link
                     })
                 else:
-                    # 일반 뉴스에 추가
                     stock_normal_items.append(formatted_link)
             
-            # 일반 뉴스는 종목별로 최대 5개만 저장 (너무 많음 방지)
+            # 일반 뉴스는 5개까지만
             if stock_normal_items:
                 all_normal_news[stock] = stock_normal_items[:5]
                 
         except Exception as e:
-            print(f"[{stock}] 크롤링 에러: {e}")
+            print(f"[{stock}] 실패: {e}")
+            # 실패해도 다음 종목으로 넘어감
+            continue
             
     return all_keyword_news, all_normal_news
 
@@ -146,44 +181,34 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN or not CHAT_ID:
         exit(1)
 
-    # 1. 설정 가져오기
-    stocks, filters = get_settings_from_pin()
-    yesterday_str = get_yesterday_range().strftime("%Y-%m-%d")
-
-    # 2. 뉴스 긁어오기 (시간 좀 걸림)
-    keyword_news, normal_news = fetch_and_classify_news(stocks, filters)
+    stocks, filters, is_valid = get_settings_from_pin()
     
-    # -----------------------------------------------------
-    # [Part 1] 핵심 키워드 뉴스 리포트 생성
-    # -----------------------------------------------------
-    report_msg = f"🔥 <b>[핵심 요약] 키워드 뉴스 ({yesterday_str})</b>\n"
-    report_msg += f"설정 키워드: {', '.join(filters)}\n\n"
+    if not is_valid:
+        # 고정 메시지를 못 읽었을 때 경고
+        send_telegram_message("⚠️ 설정을 읽지 못해 기본값(삼성전자)으로 검색합니다.\n고정 메시지 형식을 확인하세요.")
+
+    keyword_news, normal_news = fetch_and_classify_news(stocks, filters)
+    yesterday_str = get_yesterday_range().strftime("%Y-%m-%d")
+    
+    # [1] 핵심 리포트
+    report_msg = f"🔥 <b>핵심 요약 리포트 ({yesterday_str})</b>\n\n"
     
     if keyword_news:
-        # 종목별로 모으는 게 아니라, 발견된 순서대로(또는 종목별 그룹핑) 보여줌
-        # 여기서는 가독성을 위해 '종목명'을 앞에 달아줌
         for item in keyword_news:
             report_msg += f"✅ <b>[{item['stock']}]</b> ({item['key']})\n"
             report_msg += f"└ {item['content']}\n\n"
+        send_telegram_message(report_msg)
     else:
-        report_msg += "이런... 설정한 키워드에 걸린 뉴스가 하나도 없습니다. 😴\n"
-        
-    send_telegram_message(report_msg)
+        send_telegram_message(f"🔥 핵심 요약: 설정된 키워드({', '.join(filters)}) 뉴스가 없습니다.")
     
-    # -----------------------------------------------------
-    # [Part 2] 일반 뉴스 리포트 생성 (종목별 분류)
-    # -----------------------------------------------------
+    # [2] 일반 뉴스
     if normal_news:
-        normal_msg = f"📰 <b>[일반 뉴스] 종목별 브리핑</b>\n\n"
-        
+        normal_msg = f"📰 <b>종목별 일반 뉴스</b>\n\n"
         for stock, news_list in normal_news.items():
             normal_msg += f"🔹 <b>{stock}</b>\n"
             for news_link in news_list:
                 normal_msg += f"- {news_link}\n"
             normal_msg += "\n"
-            
         send_telegram_message(normal_msg)
     else:
-        send_telegram_message("일반 뉴스도 없습니다.")
-
-    print("전송 완료")
+        send_telegram_message("📰 일반 뉴스: 검색된 기사가 없습니다.")
