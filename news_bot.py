@@ -5,7 +5,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import time
 import re
-import difflib  # ★ 문장 유사도 비교 도구
+import difflib
 from email.utils import parsedate_to_datetime
 
 # ==========================================
@@ -80,7 +80,7 @@ def get_settings_from_pin():
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
             yst_str = get_yesterday_range().strftime("%Y-%m-%d")
-            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(유사도 60% 이상 뉴스 자동 제거)"
+            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(스포츠/봉사활동 뉴스 자동 차단 중)"
             send_telegram_message(info_msg)
             
             return stocks, filter_keywords
@@ -91,38 +91,24 @@ def get_settings_from_pin():
     return stocks, filter_keywords
 
 # ==========================================
-# 5. [핵심] 제목 유사도 검사 함수
+# 5. 유사도 검사 및 필터링
 # ==========================================
 def clean_title_for_compare(title):
-    """비교를 위해 특수문자, 괄호 등을 제거하고 순수 글자만 남김"""
-    # 1. [속보], (종합) 같은 대괄호/소괄호 내용 삭제
     title = re.sub(r'\[.*?\]', '', title) 
     title = re.sub(r'\(.*?\)', '', title)
-    # 2. 특수문자 제거
     title = re.sub(r'[^\w\s]', '', title)
-    # 3. 공백 줄이기
     return title.strip().replace(" ", "")
 
 def is_similar_news(new_title, existing_titles):
-    """
-    기존 뉴스들과 비교해서 유사도가 60% 이상이면 True(중복) 반환
-    """
     target = clean_title_for_compare(new_title)
-    
     for exist in existing_titles:
         compared = clean_title_for_compare(exist)
-        
-        # difflib을 이용한 문장 유사도 측정 (0.0 ~ 1.0)
         similarity = difflib.SequenceMatcher(None, target, compared).ratio()
-        
-        # 유사도가 0.6 (60%) 이상이면 중복으로 간주
-        if similarity > 0.6: 
-            return True
-            
+        if similarity > 0.6: return True
     return False
 
 # ==========================================
-# 6. 뉴스 수집 및 분류
+# 6. 뉴스 수집 및 분류 (강력 필터 적용)
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
     all_keyword_news = {} 
@@ -130,8 +116,15 @@ def fetch_and_classify_news(stocks, filter_keywords):
     
     target_date = get_yesterday_range()
     
-    # 노이즈 단어 필터
-    NOISE_WORDS = ["포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는"]
+    # ★ 노이즈 필터 리스트 (이 단어가 있으면 무조건 버림)
+    NOISE_WORDS = [
+        # 1. 쓸모없는 카테고리
+        "포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는",
+        # 2. 스포츠 관련 (야구단, 축구단 등)
+        "야구", "축구", "농구", "배구", "골프", "올림픽", "월드컵", "선수", "경기", "리그", "우승", "감독", "시구",
+        # 3. 사회활동/CSR 관련
+        "사회공헌", "봉사", "나눔", "기부", "성금", "캠페인", "후원", "장학", "지원사업", "CSR", "플로깅", "연탄"
+    ]
 
     for i, stock in enumerate(stocks):
         if i > 0: time.sleep(1.5)
@@ -150,9 +143,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
             items = root.findall(".//item")
             stock_normal_items = []
             stock_keyword_items = []
-            
-            # ★ 중복 검사용 리스트 (제목만 저장)
-            collected_titles = []
+            seen_titles = []
 
             for item in items:
                 # 1. 날짜 확인
@@ -168,18 +159,16 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 
                 # --- [강력한 필터링] ---
                 
-                # 2. 노이즈 단어 삭제
+                # 2. 노이즈 단어 삭제 (스포츠, 봉사 등)
                 if any(noise in title for noise in NOISE_WORDS): continue
                 
                 # 3. 제목에 종목명 없으면 삭제
                 if stock not in title: continue
 
-                # 4. ★ AI 유사도 중복 검사 ★
-                if is_similar_news(title, collected_titles):
-                    continue # 비슷한 뉴스가 이미 있으면 건너뜀
+                # 4. AI 유사도 중복 검사
+                if is_similar_news(title, seen_titles): continue
                 
-                # 중복이 아니면 등록
-                collected_titles.append(title)
+                seen_titles.append(title)
 
                 # --- [분류] ---
                 is_matched = False
