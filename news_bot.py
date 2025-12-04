@@ -80,7 +80,7 @@ def get_settings_from_pin():
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
             yst_str = get_yesterday_range().strftime("%Y-%m-%d")
-            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(광고/홍보/스포츠 뉴스 차단)"
+            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(스포츠/마케팅/수상/론칭 뉴스 차단)"
             send_telegram_message(info_msg)
             
             return stocks, filter_keywords
@@ -121,11 +121,14 @@ def fetch_and_classify_news(stocks, filter_keywords):
         # 1. 쓸모없는 카테고리
         "포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는",
         # 2. 스포츠 관련
-        "야구", "축구", "농구", "배구", "골프", "올림픽", "월드컵", "선수", "경기", "리그", "우승", "감독", "시구",
-        # 3. 사회활동/CSR 관련
+        "야구", "축구", "농구", "배구", "골프", "올림픽", "월드컵", "선수", "경기", "리그", "우승", "감독", "시구", 
+        "연승", "연패", # [NEW] 추가됨
+        # 3. 사회활동/CSR/수상 관련
         "사회공헌", "봉사", "나눔", "기부", "성금", "캠페인", "후원", "장학", "지원사업", "CSR", "플로깅", "연탄",
-        # 4. [NEW] 마케팅/이벤트/혜택 관련 (추가됨)
-        "이벤트", "프로모션", "혜택", "할인", "적립", "경품", "사은품", "특가", "기획전", "쿠폰", "체험단", "오픈런", "페이백", "출시기념"
+        "수상", "대상", "표창", "선정", # [NEW] 수상 관련 추가됨 (단, '사업자 선정' 등은 걸릴 수 있으니 주의)
+        # 4. 마케팅/이벤트/혜택/론칭 관련
+        "이벤트", "프로모션", "혜택", "할인", "적립", "경품", "사은품", "특가", "기획전", "쿠폰", "체험단", "오픈런", "페이백", "출시기념",
+        "론칭", "런칭", "오픈", "개장", "입점" # [NEW] 론칭 관련 추가됨
     ]
 
     for i, stock in enumerate(stocks):
@@ -161,7 +164,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 
                 # --- [강력한 필터링] ---
                 
-                # 2. 노이즈 단어 삭제 (스포츠, 봉사, 이벤트 등)
+                # 2. 노이즈 단어 삭제 (스포츠, 봉사, 이벤트, 론칭, 수상 등)
                 if any(noise in title for noise in NOISE_WORDS): continue
                 
                 # 3. 제목에 종목명 없으면 삭제
