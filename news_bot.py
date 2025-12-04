@@ -41,7 +41,7 @@ def send_telegram_message(text):
         print(f"❌ 연결 에러: {e}")
 
 # ==========================================
-# 4. 설정 읽기 (알림 메시지 삭제됨)
+# 4. 설정 읽기
 # ==========================================
 def get_settings_from_pin():
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat?chat_id={CHAT_ID}"
@@ -79,12 +79,10 @@ def get_settings_from_pin():
             stocks = [s.strip() for s in temp_stocks if s.strip()]
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
-            # [삭제됨] "검색 시작" 알림 메시지 부분 제거
-            # 조용히 설정값만 반환합니다.
+            # (조용히 설정만 읽어옴)
             return stocks, filter_keywords
 
     except Exception as e:
-        # 에러 날 때만 알려줌
         send_telegram_message(f"⚠️ 설정 읽기 실패: {e}")
         
     return stocks, filter_keywords
@@ -107,7 +105,7 @@ def is_similar_news(new_title, existing_titles):
     return False
 
 # ==========================================
-# 6. 뉴스 수집 및 분류 (페스티벌 차단 추가)
+# 6. 뉴스 수집 및 분류 (증권사 차단 적용)
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
     all_keyword_news = {} 
@@ -115,7 +113,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
     
     target_date = get_yesterday_range()
     
-    # ★ 노이즈 필터 리스트
+    # ★ 노이즈 필터 리스트 (이 단어가 있으면 무조건 버림)
     NOISE_WORDS = [
         # 1. 쓸모없는 카테고리
         "포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는",
@@ -124,10 +122,14 @@ def fetch_and_classify_news(stocks, filter_keywords):
         "연승", "연패",
         # 3. 사회활동/CSR/수상/축제 관련
         "사회공헌", "봉사", "나눔", "기부", "성금", "캠페인", "후원", "장학", "지원사업", "CSR", "플로깅", "연탄",
-        "수상", "대상", "표창", "선정", "페스티벌", "박람회", "전시회", # [NEW] 페스티벌, 박람회 추가됨
+        "수상", "대상", "표창", "선정", "페스티벌", "박람회", "전시회",
         # 4. 마케팅/이벤트/혜택/론칭 관련
         "이벤트", "프로모션", "혜택", "할인", "적립", "경품", "사은품", "특가", "기획전", "쿠폰", "체험단", "오픈런", "페이백", "출시기념",
-        "론칭", "런칭", "오픈", "개장", "입점"
+        "론칭", "런칭", "오픈", "개장", "입점",
+        # 5. [NEW] 증권사/리포트/투자의견 관련 (추가됨)
+        "투자증권", "신한투자", "한국투자", "한투", "미래에셋", "삼성증권", "NH투자", "KB증권", "키움증권", "대신증권", 
+        "메리츠", "하나증권", "유안타", "SK증권", "한화투자", "교보증권", "하이투자", "현대차증권", "IBK투자", "이베스트", "유진투자", "DB금융",
+        "목표주가", "목표가", "투자의견", "매수", "유지", "상향", "하향"
     ]
 
     for i, stock in enumerate(stocks):
@@ -150,6 +152,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
             seen_titles = []
 
             for item in items:
+                # 1. 날짜 확인
                 try:
                     pub_date_str = item.find("pubDate").text
                     article_dt_utc = parsedate_to_datetime(pub_date_str)
@@ -233,7 +236,6 @@ if __name__ == "__main__":
             flat_keyword_list.append("")
         smart_send(header, flat_keyword_list)
     else:
-        # 뉴스 없으면 조용히 종료 (아무 메시지도 안 보냄)
         pass
     
     # [2] 일반 뉴스
@@ -246,5 +248,4 @@ if __name__ == "__main__":
             flat_normal_list.append("")
         smart_send(header, flat_normal_list)
     else:
-        # 뉴스 없으면 조용히 종료
         pass
