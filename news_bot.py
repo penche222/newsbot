@@ -4,6 +4,8 @@ import os
 import urllib.parse
 import xml.etree.ElementTree as ET
 import time
+import re
+import difflib  # ★ 문장 유사도 비교 도구
 from email.utils import parsedate_to_datetime
 
 # ==========================================
@@ -78,7 +80,7 @@ def get_settings_from_pin():
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
             yst_str = get_yesterday_range().strftime("%Y-%m-%d")
-            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(제목에 종목명이 포함된 뉴스만 엄선합니다)"
+            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(유사도 60% 이상 뉴스 자동 제거)"
             send_telegram_message(info_msg)
             
             return stocks, filter_keywords
@@ -89,7 +91,38 @@ def get_settings_from_pin():
     return stocks, filter_keywords
 
 # ==========================================
-# 5. 뉴스 수집 (엄격한 필터링 적용)
+# 5. [핵심] 제목 유사도 검사 함수
+# ==========================================
+def clean_title_for_compare(title):
+    """비교를 위해 특수문자, 괄호 등을 제거하고 순수 글자만 남김"""
+    # 1. [속보], (종합) 같은 대괄호/소괄호 내용 삭제
+    title = re.sub(r'\[.*?\]', '', title) 
+    title = re.sub(r'\(.*?\)', '', title)
+    # 2. 특수문자 제거
+    title = re.sub(r'[^\w\s]', '', title)
+    # 3. 공백 줄이기
+    return title.strip().replace(" ", "")
+
+def is_similar_news(new_title, existing_titles):
+    """
+    기존 뉴스들과 비교해서 유사도가 60% 이상이면 True(중복) 반환
+    """
+    target = clean_title_for_compare(new_title)
+    
+    for exist in existing_titles:
+        compared = clean_title_for_compare(exist)
+        
+        # difflib을 이용한 문장 유사도 측정 (0.0 ~ 1.0)
+        similarity = difflib.SequenceMatcher(None, target, compared).ratio()
+        
+        # 유사도가 0.6 (60%) 이상이면 중복으로 간주
+        if similarity > 0.6: 
+            return True
+            
+    return False
+
+# ==========================================
+# 6. 뉴스 수집 및 분류
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
     all_keyword_news = {} 
@@ -97,7 +130,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
     
     target_date = get_yesterday_range()
     
-    # [설정] 노이즈 필터 (이 단어가 제목에 있으면 무조건 버림)
+    # 노이즈 단어 필터
     NOISE_WORDS = ["포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는"]
 
     for i, stock in enumerate(stocks):
@@ -117,7 +150,9 @@ def fetch_and_classify_news(stocks, filter_keywords):
             items = root.findall(".//item")
             stock_normal_items = []
             stock_keyword_items = []
-            seen_titles = set()
+            
+            # ★ 중복 검사용 리스트 (제목만 저장)
+            collected_titles = []
 
             for item in items:
                 # 1. 날짜 확인
@@ -131,24 +166,22 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 title = item.find("title").text.strip()
                 link = item.find("link").text
                 
-                # --- [핵심 필터링 시작] ---
+                # --- [강력한 필터링] ---
                 
-                # 2. 중복 제거
-                if title in seen_titles: continue
-                seen_titles.add(title)
+                # 2. 노이즈 단어 삭제
+                if any(noise in title for noise in NOISE_WORDS): continue
                 
-                # 3. 노이즈 단어 포함 시 삭제
-                if any(noise in title for noise in NOISE_WORDS):
-                    continue
+                # 3. 제목에 종목명 없으면 삭제
+                if stock not in title: continue
 
-                # 4. ★ 제목에 종목명이 없으면 삭제 (가장 중요) ★
-                # (종목명이 '삼성'인데 제목에 '삼성전자'만 있어도 통과되도록 in 체크)
-                if stock not in title:
-                    continue 
+                # 4. ★ AI 유사도 중복 검사 ★
+                if is_similar_news(title, collected_titles):
+                    continue # 비슷한 뉴스가 이미 있으면 건너뜀
+                
+                # 중복이 아니면 등록
+                collected_titles.append(title)
 
-                # --- [필터링 통과한 뉴스만 분류] ---
-
-                # 키워드 매칭
+                # --- [분류] ---
                 is_matched = False
                 matched_key = ""
                 if filter_keywords:
@@ -178,7 +211,7 @@ def fetch_and_classify_news(stocks, filter_keywords):
     return all_keyword_news, all_normal_news
 
 # ==========================================
-# 6. 스마트 버퍼 전송
+# 7. 스마트 버퍼 전송
 # ==========================================
 def smart_send(header, lines):
     if not lines: return
@@ -195,7 +228,7 @@ def smart_send(header, lines):
         send_telegram_message(current_buffer)
 
 # ==========================================
-# 7. 메인 실행
+# 8. 메인 실행
 # ==========================================
 if __name__ == "__main__":
     if not TELEGRAM_TOKEN or not CHAT_ID: exit(1)
@@ -226,6 +259,4 @@ if __name__ == "__main__":
             flat_normal_list.append("")
         smart_send(header, flat_normal_list)
     else:
-        # 일반 뉴스가 없더라도, '종목명'이 제목에 꼭 들어가야 하므로
-        # 너무 엄격해서 뉴스가 없을 수도 있음을 알려줌
-        send_telegram_message(f"📰 일반 뉴스: 조건(제목에 종목명 포함)에 맞는 어제 뉴스가 없습니다.")
+        send_telegram_message(f"📰 일반 뉴스: 조건에 맞는 어제 뉴스가 없습니다.")
