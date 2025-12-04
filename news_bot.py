@@ -13,10 +13,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 # ==========================================
-# 2. 날짜 계산 (어제 날짜 00:00 ~ 23:59)
+# 2. 날짜 계산 (어제 00:00 ~ 23:59)
 # ==========================================
 def get_yesterday_range():
-    # UTC + 9시간 = 한국 시간
     now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
     yesterday = now_kst - datetime.timedelta(days=1)
     return yesterday.date()
@@ -79,7 +78,7 @@ def get_settings_from_pin():
             filter_keywords = [k.strip() for k in temp_keywords if k.strip()]
             
             yst_str = get_yesterday_range().strftime("%Y-%m-%d")
-            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}"
+            info_msg = f"🔍 <b>검색 시작 ({yst_str})</b>\n- 종목: {len(stocks)}개\n- 키워드: {', '.join(filter_keywords)}\n(제목에 종목명이 포함된 뉴스만 엄선합니다)"
             send_telegram_message(info_msg)
             
             return stocks, filter_keywords
@@ -90,13 +89,16 @@ def get_settings_from_pin():
     return stocks, filter_keywords
 
 # ==========================================
-# 5. 뉴스 수집 및 분류 (중복 제거 & 3개 제한)
+# 5. 뉴스 수집 (엄격한 필터링 적용)
 # ==========================================
 def fetch_and_classify_news(stocks, filter_keywords):
-    all_keyword_news = [] 
+    all_keyword_news = {} 
     all_normal_news = {} 
     
     target_date = get_yesterday_range()
+    
+    # [설정] 노이즈 필터 (이 단어가 제목에 있으면 무조건 버림)
+    NOISE_WORDS = ["포토", "화보", "사진", "스포츠", "연예", "부고", "인사", "동영상", "오늘의", "미리보는"]
 
     for i, stock in enumerate(stocks):
         if i > 0: time.sleep(1.5)
@@ -114,31 +116,39 @@ def fetch_and_classify_news(stocks, filter_keywords):
 
             items = root.findall(".//item")
             stock_normal_items = []
-            
-            # [추가됨] 중복 뉴스 방지를 위한 제목 저장소
+            stock_keyword_items = []
             seen_titles = set()
 
             for item in items:
-                # 1. 날짜 필터 (어제 뉴스만)
+                # 1. 날짜 확인
                 try:
                     pub_date_str = item.find("pubDate").text
                     article_dt_utc = parsedate_to_datetime(pub_date_str)
                     article_dt_kst = article_dt_utc + datetime.timedelta(hours=9)
-                    
-                    if article_dt_kst.date() != target_date:
-                        continue 
-                except:
-                    continue
+                    if article_dt_kst.date() != target_date: continue 
+                except: continue
 
-                title = item.find("title").text.strip() # 공백제거
+                title = item.find("title").text.strip()
                 link = item.find("link").text
                 
-                # [추가됨] 중복 제목이면 건너뛰기
-                if title in seen_titles:
+                # --- [핵심 필터링 시작] ---
+                
+                # 2. 중복 제거
+                if title in seen_titles: continue
+                seen_titles.add(title)
+                
+                # 3. 노이즈 단어 포함 시 삭제
+                if any(noise in title for noise in NOISE_WORDS):
                     continue
-                seen_titles.add(title) # 제목 등록
 
-                # 2. 키워드 매칭
+                # 4. ★ 제목에 종목명이 없으면 삭제 (가장 중요) ★
+                # (종목명이 '삼성'인데 제목에 '삼성전자'만 있어도 통과되도록 in 체크)
+                if stock not in title:
+                    continue 
+
+                # --- [필터링 통과한 뉴스만 분류] ---
+
+                # 키워드 매칭
                 is_matched = False
                 matched_key = ""
                 if filter_keywords:
@@ -151,15 +161,13 @@ def fetch_and_classify_news(stocks, filter_keywords):
                 formatted_link = f"<a href='{link}'>{title}</a>"
 
                 if is_matched:
-                    all_keyword_news.append({
-                        "stock": stock,
-                        "key": matched_key,
-                        "content": formatted_link
-                    })
+                    stock_keyword_items.append(f"({matched_key}) {formatted_link}")
                 else:
                     stock_normal_items.append(formatted_link)
             
-            # [수정됨] 일반 뉴스는 중요도순(상위) 3개까지만 자름
+            if stock_keyword_items:
+                all_keyword_news[stock] = stock_keyword_items
+                
             if stock_normal_items:
                 all_normal_news[stock] = stock_normal_items[:3]
                 
@@ -172,56 +180,52 @@ def fetch_and_classify_news(stocks, filter_keywords):
 # ==========================================
 # 6. 스마트 버퍼 전송
 # ==========================================
-def smart_send(header, news_list, is_keyword_section=True):
-    if not news_list: return
-
+def smart_send(header, lines):
+    if not lines: return
     MAX_LENGTH = 3000
     current_buffer = header + "\n\n"
     
-    for item in news_list:
-        if is_keyword_section:
-            line = f"✅ <b>[{item['stock']}]</b> ({item['key']})\n└ {item['content']}\n\n"
-        else:
-            line = item + "\n"
-
+    for line in lines:
         if len(current_buffer) + len(line) > MAX_LENGTH:
             send_telegram_message(current_buffer)
             current_buffer = "" 
-        
-        current_buffer += line
+        current_buffer += line + "\n"
     
-    if current_buffer:
+    if current_buffer.strip():
         send_telegram_message(current_buffer)
 
 # ==========================================
 # 7. 메인 실행
 # ==========================================
 if __name__ == "__main__":
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        exit(1)
+    if not TELEGRAM_TOKEN or not CHAT_ID: exit(1)
 
     stocks, filters = get_settings_from_pin()
     keyword_news, normal_news = fetch_and_classify_news(stocks, filters)
-    
     yesterday_str = get_yesterday_range().strftime("%Y-%m-%d")
     
-    # [1] 핵심 리포트 전송
+    # [1] 핵심 리포트
     if keyword_news:
         header = f"🔥 <b>핵심 요약 리포트 ({yesterday_str})</b>"
-        smart_send(header, keyword_news, is_keyword_section=True)
+        flat_keyword_list = []
+        for stock, items in keyword_news.items():
+            flat_keyword_list.append(f"✅ <b>[{stock}]</b>")
+            for item in items: flat_keyword_list.append(f"└ {item}")
+            flat_keyword_list.append("")
+        smart_send(header, flat_keyword_list)
     else:
-        send_telegram_message(f"🔥 핵심 요약: 설정된 키워드 뉴스가 없습니다. ({yesterday_str})")
+        send_telegram_message(f"🔥 핵심 요약: 관련 뉴스가 없습니다.")
     
-    # [2] 일반 뉴스 전송
+    # [2] 일반 뉴스
     if normal_news:
+        header = f"📰 <b>일반 뉴스 (Top 3)</b>"
         flat_normal_list = []
         for stock, items in normal_news.items():
             flat_normal_list.append(f"🔹 <b>{stock}</b>")
-            for link in items:
-                flat_normal_list.append(f"- {link}")
-            flat_normal_list.append("") 
-            
-        header = f"📰 <b>종목별 일반 뉴스 (Top 3)</b>"
-        smart_send(header, flat_normal_list, is_keyword_section=False)
+            for item in items: flat_normal_list.append(f"- {item}")
+            flat_normal_list.append("")
+        smart_send(header, flat_normal_list)
     else:
-        send_telegram_message(f"📰 일반 뉴스: 검색된 어제 자 기사가 없습니다.")
+        # 일반 뉴스가 없더라도, '종목명'이 제목에 꼭 들어가야 하므로
+        # 너무 엄격해서 뉴스가 없을 수도 있음을 알려줌
+        send_telegram_message(f"📰 일반 뉴스: 조건(제목에 종목명 포함)에 맞는 어제 뉴스가 없습니다.")
