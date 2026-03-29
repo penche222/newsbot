@@ -8,7 +8,7 @@ import re
 import difflib
 from email.utils import parsedate_to_datetime
 
-# ==========================================
+#2 ==========================================
 # 1. 설정
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
